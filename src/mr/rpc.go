@@ -26,14 +26,15 @@ type ExampleReply struct {
 type TaskTypes int
 
 const (
-	Map TaskTypes = iota
+	Other TaskTypes = iota
 	Reduce
+	Map
 )
 
 type TaskInfo struct {
 	TaskFile []string
 	TaskType TaskTypes
-	TaskId int
+	MapId    int
 	ReduceId int
 }
 
