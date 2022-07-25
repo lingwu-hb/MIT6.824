@@ -10,11 +10,13 @@ package main
 // Please do not change this file.
 //
 
-import "6.824/mr"
-import "plugin"
+import (
+	"6.824/mr"
+	"log"
+	"plugin"
+)
 import "os"
 import "fmt"
-import "log"
 
 func main() {
 	if len(os.Args) != 2 {
@@ -33,8 +35,14 @@ func main() {
 //
 func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
 	p, err := plugin.Open(filename)
+	//// 判断wc.so文件是否存在
+	//if Exists("wc.so") {
+	//	fmt.Println("yes")
+	//} else {
+	//	fmt.Println("no")
+	//}
 	if err != nil {
-		log.Fatalf("cannot load plugin %v", filename)
+		log.Fatalf("cannot load plugin %v, err is: %v", filename, err)
 	}
 	xmapf, err := p.Lookup("Map")
 	if err != nil {
@@ -48,4 +56,16 @@ func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(strin
 	reducef := xreducef.(func(string, []string) string)
 
 	return mapf, reducef
+}
+
+// 判断所给路径文件/文件夹是否存在
+func Exists(path string) bool {
+	_, err := os.Stat(path) //os.Stat获取文件信息
+	if err != nil {
+		if os.IsExist(err) {
+			return true
+		}
+		return false
+	}
+	return true
 }
