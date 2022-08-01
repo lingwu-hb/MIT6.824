@@ -18,7 +18,7 @@ package raft
 //
 
 import (
-	"math/rand"
+	"math"
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -72,8 +72,10 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	id      uint // 当前服务器的id，最好不要和上面的me混为一谈
-	state   State
+	id    uint // 当前服务器的id，最好不要和上面的me混为一谈
+	state State
+
+	cond    *sync.Cond
 	applyCh chan ApplyMsg
 
 	currentTerm uint       // 服务器最后知道的任期号
@@ -83,17 +85,18 @@ type Raft struct {
 	commitIndex uint // 已知被提交的最大日志条目的索引值
 	lastApplied uint // 已知被状态机所执行的最大日志条目
 
-	// 成为Leader后才需要初始化的条目
-	nextIndex  []uint
-	matchIndex []uint
+	// 成为Leader后才需要初始化的条目，由Leader进行维护
+	nextIndex  []uint // 对每个服务器而言，需要发给它的下一个日志条目的索引值
+	matchIndex []uint // 对每个服务器而言，已经复制到该服务器的日志的最高索引值
 
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
 }
 
 type LogEntry struct {
-	comands []struct{} // 要执行的命令
-	term    uint       // 从Leader处收到的任期号
+	Commands []interface{} // 要执行的命令
+	Term     uint          // 从Leader处收到的任期号
+	Index    uint          // 当前日志的序号
 }
 
 // GetState return currentTerm and whether this server
@@ -172,22 +175,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// AppendEntriesArgs append entries or heartbeat
-type AppendEntriesArgs struct {
-	Term         uint // new leader's term
-	LeaderId     uint
-	PrevLogIndex uint
-	PrevLogTerm  uint
-	Entries      []interface{}
-	LeaderCommit uint
-}
-
-// AppendEntriesReply append entries or heartbeat
-type AppendEntriesReply struct {
-	Term    uint
-	Success bool
-}
-
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// 待优化，尽量使代码简洁高效
 	rf.mu.Lock()
@@ -197,21 +184,81 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term, reply.Success = rf.currentTerm, false
 		return
 	}
-	// 分成两种情况 appendEntries or heartbeat
-	if len(args.Entries) != 0 {
-		// appendEntries
-	} else {
-		// heartbeat
+
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.ChangeState(Follower)
-		rf.electionTimer.Reset(RandomizedElectionTimeout())
+		rf.votedFor = -1
 	}
-}
 
-// sendAppendEntries rpc handler
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	rf.electionTimer.Reset(RandomizedElectionTimeout())
+	reply.Term = rf.currentTerm
+
+	if len(rf.log) >= int(args.PrevLogIndex) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		return
+	}
+
+	// delete conflicting entries and append new entries
+	i := 0
+	j := int(args.PrevLogIndex + 1)
+	for i = 0; i < len(args.Entries); i++ {
+		if j >= len(rf.log) {
+			break
+		}
+		if rf.log[j].Term == args.Entries[i].Term {
+			j++
+		} else {
+			rf.log = append(rf.log[:j], args.Entries[i:]...)
+			i = len(args.Entries)
+			j = len(rf.log) - 1
+			break
+		}
+	}
+	if i < len(args.Entries) {
+		rf.log = append(rf.log, args.Entries[i:]...)
+		j = len(rf.log) - 1
+	} else {
+		j--
+	}
+	reply.Success = true
+
+	if args.LeaderCommit > rf.commitIndex {
+		oriCommitIndex := rf.commitIndex
+		rf.commitIndex = uint(math.Min(float64(args.LeaderCommit), float64(j)))
+		DPrintf("[Term %d]:Raft [%d] [state %d] commitIndex is %d", rf.currentTerm, rf.me, rf.state, rf.commitIndex)
+		if rf.commitIndex > oriCommitIndex {
+			// wake up sleeping applyCommit Go routine
+			// to do: figure out the function of rf.cond
+			rf.cond.Broadcast()
+		}
+	}
+
+	//rf.currentTerm = args.Term
+	//rf.votedFor = -1 // 新的leader选出来之后，更新votedFor
+	//rf.ChangeState(Follower)
+	//rf.electionTimer.Reset(RandomizedElectionTimeout())
+	//// 分成两种情况 appendEntries or heartbeat
+	//if len(args.Entries) != 0 {
+	//	// appendEntries
+	//	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	//		reply.Term, reply.Success = rf.currentTerm, false
+	//		return
+	//	}
+	//	// 其他情况都需要补充对应的日志
+	//	v := LogEntry{
+	//		Term:     args.Term,
+	//		Commands: args.Entries,
+	//	}
+	//	rf.log[args.PrevLogIndex+1] = v
+	//	// 如果后面还有，删除后面的部分
+	//	if len(rf.log) > int(args.PrevLogIndex)+2 {
+	//		rf.log = rf.log[:int(args.PrevLogIndex)+2]
+	//	}
+	//
+	//	// to do: check out the LeaderId to commit the pending log
+	//}
+	//reply.Term, reply.Success = rf.currentTerm, true
 }
 
 // BroadcastHeartbeat 并行向其他节点发送心跳
@@ -219,10 +266,11 @@ func (rf *Raft) BroadcastHeartbeat() {
 	heartbeat := &AppendEntriesArgs{
 		Term:     rf.currentTerm,
 		LeaderId: rf.id,
-		Entries:  make([]interface{}, 0),
+		Entries:  make([]LogEntry, 0),
 	}
 	rf.electionTimer.Reset(RandomizedElectionTimeout())
 	rf.heartbeatTimer.Reset(StableHeartbeatTimeout())
+	rf.votedFor = -1
 	rf.persist()
 	for peer := range rf.peers {
 		if peer == rf.me {
@@ -234,8 +282,64 @@ func (rf *Raft) BroadcastHeartbeat() {
 				if heartbeat.Term == rf.currentTerm && rf.state == Leader {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
-					if reply.Success {
+					if !reply.Success {
+						if reply.Term > rf.currentTerm {
+							rf.ChangeState(Follower)
+							rf.currentTerm = reply.Term
+							rf.persist()
+						}
+					}
+				}
+			}
+		}(peer)
+	}
+}
 
+// BroadAppendEntries 并行向其他节点发送增加更新log请求
+func (rf *Raft) BroadAppendEntries(command interface{}) {
+	commands := make([]interface{}, 0)
+	commands = append(commands, command)
+	entriy := make([]LogEntry, 0)
+	entriy = append(entriy, LogEntry{
+		Commands: commands,
+		Term:     rf.currentTerm,
+		Index:    rf.getLastLog().Index + 1,
+	})
+	appendEntries := &AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.id,
+		PrevLogIndex: rf.getLastLog().Index,
+		PrevLogTerm:  rf.getLastLog().Term,
+		Entries:      entriy,
+		LeaderCommit: rf.currentTerm,
+	}
+	rf.electionTimer.Reset(RandomizedElectionTimeout())
+	rf.heartbeatTimer.Reset(StableHeartbeatTimeout())
+	rf.persist()
+	count, isSkip := 0, false
+	for peer := range rf.peers {
+		if peer == rf.me {
+			// 补充自己的log日志
+			rf.log = append(rf.log, entriy...)
+		}
+		go func(peer int) {
+			reply := &AppendEntriesReply{}
+			if ok := rf.sendAppendEntries(peer, appendEntries, reply); ok {
+				if appendEntries.Term == rf.currentTerm && rf.state == Leader {
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if reply.Success {
+						if isSkip {
+							return
+						}
+						if count > len(rf.peers)/2 {
+							// commit the log
+							rf.CommitTheLog()
+
+							isSkip = true
+							return
+						}
+						count++
 					} else {
 						if reply.Term > rf.currentTerm {
 							rf.ChangeState(Follower)
@@ -249,27 +353,9 @@ func (rf *Raft) BroadcastHeartbeat() {
 	}
 }
 
-//
-// RequestVoteArgs example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-// 由 Candidate 发起投票
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         uint
-	CandidateId  uint
-	LastLogIndex int
-	LastLogTerm  uint
-}
-
-//
-// RequestVoteReply example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        uint // 返回的当前任期号，如果term > currentTerm，需要更新currentTerm
-	VoteGranted bool // 是否投票
+// CommitTheLog Leader完成新log的提交
+func (rf *Raft) CommitTheLog() {
+	rf.commitIndex = rf.getLastLog().Index
 }
 
 //
@@ -292,47 +378,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.ChangeState(Follower)
 		rf.currentTerm, rf.votedFor = args.Term, -1
 	}
-	if args.LastLogIndex != len(rf.log)-1 || args.LastLogTerm != rf.log[len(rf.log)-1].term {
+	if args.LastLogTerm < rf.log[len(rf.log)-1].Term || (args.LastLogTerm == rf.log[len(rf.log)-1].Term &&
+		args.LastLogIndex < len(rf.log)-1) {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
 	rf.votedFor = int(args.CandidateId)
 	rf.electionTimer.Reset(RandomizedElectionTimeout())
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
 }
 
 //
@@ -355,6 +408,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	term = int(rf.currentTerm)
+	if rf.state != Leader {
+		isLeader = false
+	} else {
+		rf.BroadAppendEntries(command)
+	}
 
 	return index, term, isLeader
 }
@@ -378,6 +437,26 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+func (rf *Raft) applied() {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		for rf.lastApplied >= rf.commitIndex {
+			rf.cond.Wait()
+		}
+		rf.lastApplied++
+		comIdx := rf.lastApplied
+		com := rf.log[comIdx].Commands
+		rf.mu.Unlock()
+		msg := ApplyMsg{
+			CommandValid: true,
+			Command:      com,
+			CommandIndex: int(comIdx),
+		}
+		// here will be blocked
+		rf.applyCh <- msg
+	}
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -410,16 +489,12 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) ChangeState(st State) {
-	rf.state = st
-}
-
 func (rf *Raft) StartElection() {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.id,
 		LastLogIndex: len(rf.log) - 1,
-		LastLogTerm:  rf.log[len(rf.log)-1].term,
+		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
 	rf.votedFor = rf.me
 	grantedVotes := 1
@@ -454,16 +529,6 @@ func (rf *Raft) StartElection() {
 	}
 }
 
-// RandomizedElectionTimeout generate random election timeout from [300, 400] milliseconds
-func RandomizedElectionTimeout() time.Duration {
-	return time.Duration((rand.Float64()+3)*100) * time.Millisecond
-}
-
-// StableHeartbeatTimeout send heartbeat per 150 milliseconds
-func StableHeartbeatTimeout() time.Duration {
-	return time.Duration(150) * time.Millisecond
-}
-
 //
 // Make
 // the service or tester wants to create a Raft server. the ports
@@ -493,14 +558,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		heartbeatTimer: time.NewTimer(StableHeartbeatTimeout()),
 		electionTimer:  time.NewTimer(RandomizedElectionTimeout()),
 	}
-
-	// Your initialization code here (2A, 2B, 2C).
+	rf.cond = sync.NewCond(&rf.mu)
 
 	// initialize from State persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+
+	go rf.applied()
 
 	return rf
 }

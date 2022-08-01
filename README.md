@@ -20,7 +20,7 @@ MIT6.824课程学习
 
 ## lab2
 
-* rpc通信原理理解
+### rpc通信原理理解
 
 Client和Server通过chan进行通信。下面是典型的利用chan进行通信的结构体设计：
 
@@ -106,7 +106,7 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 
 为了增加raft算法的可理解性，将raft算法分为四个部分：leader选举，日志复制，安全性和成员变更
 
-2A：完成leader选举部分代码
+### 2A：完成leader选举部分代码
 
 * RequestVote rpc方法：
 
@@ -130,3 +130,21 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 
 选举超时时间:[300ms, 400ms]
 固定心跳间隔:150ms
+
+### 2B：日志复制
+
+Raft算法对日志的操作过程：
+
+Leader收到日志--->Leader保存到本地的log中--->leader发送请求，保证半数服务器复制--->Leader提交请求--->成功应用日志
+
+* appendEntries rpc 方法
+
+首先考虑args.Term && rf.currentTerm，如果左边小，返回false；如果右边小，更新当前任期，变成follow，不支持任何人
+
+能到此处，一般情况下都是当前任期的leader，更新超时选举时间，更新reply.Term。
+
+判断日志情况，如果我们的日志没有对方的长或者任期不一致，直接返回false
+
+后面就是增加新的日志，以及替换掉日志中的冲突
+
+拿到新的日志后，需要根据leaderCommit来应用已经提交的日志
