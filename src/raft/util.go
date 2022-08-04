@@ -7,6 +7,7 @@ import (
 )
 
 // Debugging
+// const Debug = true
 const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -16,7 +17,33 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type State int
+
+const (
+	Follower State = iota
+	Candidate
+	Leader
+)
+
+func (s State) String() string {
+	switch s {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 func (rf *Raft) getLastLog() LogEntry {
+	//if len(rf.log) == 0 {
+	//	return LogEntry{
+	//		Index: -1,
+	//	}
+	//}
 	return rf.log[len(rf.log)-1]
 }
 

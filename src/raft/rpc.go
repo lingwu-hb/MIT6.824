@@ -4,10 +4,10 @@ package raft
 type AppendEntriesArgs struct {
 	Term         uint // new leader's term
 	LeaderId     uint
-	PrevLogIndex uint
+	PrevLogIndex int
 	PrevLogTerm  uint
 	Entries      []LogEntry
-	LeaderCommit uint
+	LeaderCommit int
 }
 
 // AppendEntriesReply append entries or heartbeat
