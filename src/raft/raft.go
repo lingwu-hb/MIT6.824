@@ -293,15 +293,12 @@ func (rf *Raft) BroadAppendEntries(command interface{}) {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
 					if reply.Success {
-						if isSkip {
-							return
-						}
 						if count > len(rf.peers)/2 {
 							// commit the log
-							rf.CommitTheLog()
-
-							isSkip = true
-							return
+							if !isSkip {
+								rf.CommitTheLog()
+								isSkip = true
+							}
 						}
 						count++
 					} else {
