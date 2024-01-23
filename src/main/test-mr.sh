@@ -83,7 +83,9 @@ $TIMEOUT ../mrworker ../../mrapps/wc.so &
 $TIMEOUT ../mrworker ../../mrapps/wc.so &
 
 # wait for the coordinator to exit.
-wait $pid
+# wait $pid
+# change to wait for all the workers and coordinator to exit.
+wait
 
 # since workers are required to exit when a job is completely finished,
 # and not before, that means the job has finished.
@@ -99,6 +101,8 @@ fi
 
 # wait for remaining workers and coordinator to exit.
 wait
+
+# this is the place to begin to comment the test.sh
 
 #########################################################
 # now indexer
@@ -315,6 +319,7 @@ else
   echo '---' crash test: FAIL
   failed_any=1
 fi
+
 
 #########################################################
 if [ $failed_any -eq 0 ]; then

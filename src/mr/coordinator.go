@@ -2,13 +2,13 @@ package mr
 
 import (
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 type State int
 

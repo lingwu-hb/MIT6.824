@@ -3,14 +3,14 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
+	"log"
+	"net/rpc"
 	"os"
 	"sort"
 	"strconv"
 )
-import "log"
-import "net/rpc"
-import "hash/fnv"
 
 // for sorting by key.
 type ByKey []KeyValue
@@ -60,13 +60,13 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		// 设定为other，如果没有从call函数接收到具体的要求，就不允许进行task任务操作
 		taskinfo := TaskInfo{}
-		ok := call("Coordinator.DistributeTask", &ExampleArgs{1}, &taskinfo)
+		ok := call("Coordinator.DistributeTask", &ExampleArgs{}, &taskinfo)
 		if !ok {
 			// 调用失败
-			// fmt.Printf("call failed!\n")
+			log.Printf("Coordinator.DistributeTask call failed!\n")
 			break
 		}
-		// log.Printf("%v", taskinfo.TaskType)
+		// log.Printf("test for shell output: %v", taskinfo.TaskType)
 
 		// fmt.Printf("%v\n", taskinfo)
 		if taskinfo.TaskType == Map {
@@ -75,9 +75,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Printf("handle map task failed!\n")
 			}
 
-			if ok := call("Coordinator.MapCompleted", &taskinfo, &ExampleReply{1}); !ok {
+			if ok := call("Coordinator.MapCompleted", &taskinfo, &ExampleReply{}); !ok {
 				// 调用失败
-				// log.Printf("call failed!\n")
+				log.Printf("Coordinator.MapCompleted call failed!\n")
 				break
 			}
 		} else if taskinfo.TaskType == Reduce {
@@ -86,9 +86,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Printf("handle reduce task failed!\n")
 			}
 
-			if ok := call("Coordinator.ReduceCompleted", &taskinfo, &ExampleReply{1}); !ok {
+			if ok := call("Coordinator.ReduceCompleted", &taskinfo, &ExampleReply{}); !ok {
 				// 调用失败
-				// log.Printf("call failed!\n")
+				log.Printf("Coordinator.ReduceCompleted call failed! the ReduceId is %v\n", taskinfo.ReduceId)
 				break
 			}
 		}
